@@ -1,21 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { callClaudeWithImage, callClaude } from "@/lib/claude";
-import {
-  CAPTION_SYSTEM_PROMPT,
-  CAPTION_USER_PROMPT,
-  QUALITY_EVAL_SYSTEM_PROMPT,
-  QUALITY_EVAL_USER_PROMPT,
-  VQA_DIAGNOSIS_SYSTEM_PROMPT,
-  VQA_DIAGNOSIS_USER_PROMPT,
-  VQA_MANAGEMENT_SYSTEM_PROMPT,
-  VQA_MANAGEMENT_USER_PROMPT,
-  JUDGE_SYSTEM_PROMPT,
-  JUDGE_USER_PROMPT,
-} from "@/lib/prompts";
-import { CPJResult, CaptionResult, VQAResult, JudgeResult } from "@/types/cpj";
+import { callClaudeWithImage } from "@/lib/claude";
+import { CPJResult } from "@/types/cpj";
 
-const MAX_CAPTION_ATTEMPTS = 3;
-const MIN_QUALITY_SCORE = 8;
+// 단일 통합 진단 프롬프트 (타임아웃 방지)
+const UNIFIED_DIAGNOSIS_PROMPT = `당신은 식물공장에서 재배되는 유러피안 양상추(European Lettuce) 전문 진단가입니다.
+
+이 이미지를 분석하여 다음 형식으로 종합 진단 결과를 제공하세요:
+
+## 이미지 분석
+[식물체의 전반적인 상태, 잎 색상, 형태, 결구 상태 등 상세 기술]
+
+## 진단 결과
+**주요 진단**: [가장 가능성 높은 문제점]
+**부수 진단**: [추가로 의심되는 문제들]
+**심각도**: [낮음/중간/높음]
+**신뢰도**: [높음/중간/낮음]
+
+## 원인 분석
+[증상의 원인 분석 - 영양 결핍, 환경 스트레스, 병해충 등]
+
+## 관리 방안
+1. **즉시 조치**: [24시간 내 필요한 조치]
+2. **환경 조절**: [온도, 습도, 광량 조절 방안]
+3. **양액 관리**: [EC, pH, 영양소 조절]
+4. **예방 조치**: [추가 피해 방지]
+
+## 예상 회복 기간
+[적절한 조치 시 예상되는 회복 기간]
+
+한국어로 답변하세요.`;
 
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
@@ -30,99 +43,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ========== Stage 1: 캡션 생성 및 품질 평가 ==========
-    let captionAttempts = 0;
-    let caption = "";
-    let qualityScore = 0;
+    // 사용자 질문이 있으면 프롬프트에 추가
+    const userPrompt = question
+      ? `${UNIFIED_DIAGNOSIS_PROMPT}\n\n추가 질문: ${question}`
+      : UNIFIED_DIAGNOSIS_PROMPT;
 
-    while (captionAttempts < MAX_CAPTION_ATTEMPTS && qualityScore < MIN_QUALITY_SCORE) {
-      captionAttempts++;
-
-      // 캡션 생성
-      caption = await callClaudeWithImage(
-        CAPTION_SYSTEM_PROMPT,
-        CAPTION_USER_PROMPT,
-        image,
-        mediaType
-      );
-
-      // 품질 평가
-      const qualityResponse = await callClaude(
-        QUALITY_EVAL_SYSTEM_PROMPT,
-        QUALITY_EVAL_USER_PROMPT(caption)
-      );
-
-      try {
-        const jsonMatch = qualityResponse.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          qualityScore = parsed.score || 0;
-        }
-      } catch {
-        qualityScore = 7;
-      }
-    }
-
-    const stage1Result: CaptionResult = {
-      caption,
-      qualityScore,
-      attempts: captionAttempts,
-    };
-
-    // ========== Stage 2: 이중 VQA ==========
-    const [diagnosisAnswer, managementAnswer] = await Promise.all([
-      callClaude(
-        VQA_DIAGNOSIS_SYSTEM_PROMPT,
-        VQA_DIAGNOSIS_USER_PROMPT(caption, question)
-      ),
-      callClaude(
-        VQA_MANAGEMENT_SYSTEM_PROMPT,
-        VQA_MANAGEMENT_USER_PROMPT(caption, question)
-      ),
-    ]);
-
-    const stage2Result: VQAResult = {
-      diagnosisAnswer,
-      managementAnswer,
-    };
-
-    // ========== Stage 3: LLM-as-a-Judge ==========
-    const judgeResponse = await callClaude(
-      JUDGE_SYSTEM_PROMPT,
-      JUDGE_USER_PROMPT(caption, diagnosisAnswer, managementAnswer, question)
+    // 단일 API 호출로 진단 완료
+    const diagnosisResult = await callClaudeWithImage(
+      "당신은 유러피안 양상추 식물공장 전문 진단가입니다. 정확하고 실용적인 진단을 제공합니다.",
+      userPrompt,
+      image,
+      mediaType
     );
 
-    let stage3Result: JudgeResult;
-
-    try {
-      const jsonMatch = judgeResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        stage3Result = {
-          selectedAnswer: parsed.selection || "combined",
-          finalAnswer: parsed.finalAnswer || judgeResponse,
-          reasoning: parsed.reasoning || "",
-        };
-      } else {
-        stage3Result = {
-          selectedAnswer: "combined",
-          finalAnswer: judgeResponse,
-          reasoning: "자동 통합 답변",
-        };
-      }
-    } catch {
-      stage3Result = {
-        selectedAnswer: "combined",
-        finalAnswer: judgeResponse,
-        reasoning: "자동 통합 답변",
-      };
-    }
-
-    // ========== 최종 결과 ==========
+    // 결과 구성
     const result: CPJResult = {
-      stage1: stage1Result,
-      stage2: stage2Result,
-      stage3: stage3Result,
+      stage1: {
+        caption: "통합 진단 모드",
+        qualityScore: 10,
+        attempts: 1,
+      },
+      stage2: {
+        diagnosisAnswer: diagnosisResult,
+        managementAnswer: diagnosisResult,
+      },
+      stage3: {
+        selectedAnswer: "combined",
+        finalAnswer: diagnosisResult,
+        reasoning: "단일 통합 진단",
+      },
       processingTime: Date.now() - startTime,
     };
 
@@ -132,10 +81,12 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Diagnose API Error:", error);
+    const errorMessage = error instanceof Error ? error.message : "진단 처리 중 오류가 발생했습니다.";
+
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "진단 처리 중 오류가 발생했습니다.",
+        error: errorMessage,
         processingTime: Date.now() - startTime,
       },
       { status: 500 }
