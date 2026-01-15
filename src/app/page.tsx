@@ -45,15 +45,20 @@ export default function Home() {
         // Stage 1: 캡션 생성
         setCurrentStage("caption");
 
-        const response = await fetch("/api/diagnose", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            image: image.base64,
-            mediaType: image.mediaType,
-            question: question || undefined,
-          }),
-        });
+        let response;
+        try {
+          response = await fetch("/api/diagnose", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              image: image.base64,
+              mediaType: image.mediaType,
+              question: question || undefined,
+            }),
+          });
+        } catch (fetchError) {
+          throw new Error("서버 연결에 실패했습니다. 네트워크를 확인해주세요.");
+        }
 
         // Stage progression
         setCurrentStage("vqa");
@@ -61,7 +66,12 @@ export default function Home() {
         setCurrentStage("judge");
         await new Promise((r) => setTimeout(r, 300));
 
-        const data = await response.json();
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error(`서버 응답 오류 (상태: ${response.status}). 잠시 후 다시 시도해주세요.`);
+        }
 
         if (!response.ok || !data.success) {
           throw new Error(data.error || `이미지 ${i + 1} 진단 중 오류가 발생했습니다.`);
@@ -79,7 +89,9 @@ export default function Home() {
       setCurrentStage("complete");
     } catch (err) {
       setCurrentStage("error");
-      setError(err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다.");
+      const errorMessage = err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다.";
+      setError(errorMessage);
+      console.error("Diagnosis error:", err);
     }
   };
 
